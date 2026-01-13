@@ -1,4 +1,7 @@
 import Base: parse
+using JuMP
+using HiGHS
+using LinearAlgebra
 
 ## utility
 """
@@ -95,10 +98,11 @@ function findPath(graph::Graph{BitVector}, source::BitVector, target::BitVector)
   dist[source] = 0
 
   while !isempty(Q)
-    sort!(Q, by=v -> dist[v])[1]
+    sort!(Q, by=v -> dist[v])
     u = popfirst!(Q)
     if u == target
       return dist[u]
+      # abort the remaining graph search if target reached
     end
 
     for v in Q
@@ -111,6 +115,124 @@ function findPath(graph::Graph{BitVector}, source::BitVector, target::BitVector)
   end
   # return (dict, prev)
   return Inf
+end
+
+### part two
+
+# I tried for a while using A* path finding, but I couldn't get it performant enough.
+# So I used the fact that this can be re-formulated as a standard ILP problem and used those solvers
+
+function buttonsToMatrix(buttons::Vector{Vector{Int}}, numLights::Int)
+  A = zeros(Int, numLights, length(buttons))
+  for i in 1:length(buttons)
+    for j in buttons[i]
+      A[j, i] = 1
+    end
+  end
+  return A
+end
+
+function minJoltage(buttons::Vector{Vector{Int}}, target::Vector{Int})
+  A = buttonsToMatrix(buttons, length(target))
+  n = length(buttons)
+  model = Model(HiGHS.Optimizer)
+  set_silent(model)
+
+  @variable(model, x[1:n] >= 0, Int)
+  @objective(model, Min, sum(x))
+  @constraint(model, A * x .== target)
+
+  optimize!(model)
+
+  #println("Status: ", termination_status(model))
+  #println("x = ", value(x))
+  #println("Objective = ", objective_value(model))
+
+  return objective_value(model)
+end
+
+### deprecated:
+
+# computes estimated distance of Vector
+function estimator(source::Vector{Int}, target::Vector{Int})
+  relativeDist = target - source
+  if any(<(0), relativeDist)
+    return Inf
+  end
+  return sum(relativeDist)
+end
+
+Node = Tuple{Vector{Int},Int}
+
+function neighbourFunction(buttons::Vector{Vector{Int}}, target::Vector{Int})
+  function getNeighbours(node::Node)
+    (source, l) = node
+    neighbours = []
+
+    if l > length(buttons)
+      return neighbours
+    end
+
+    t = copy(target)
+    steps = minimum(keepat!(t - source, buttons[l]))
+    for i in 0:steps
+      neighbour = copy(source)
+      for n in buttons[l]
+        neighbour[n] += i
+      end
+      push!(neighbours, (neighbour, l + 1))
+    end
+    return neighbours
+  end
+
+  return getNeighbours
+end
+
+function aStar(source::Vector{Int}, target::Vector{Int}, nb, h)
+  sourceNode = (source, 1)
+  openSet = []
+  push!(openSet, sourceNode)
+
+  cameFrom = Dict() # previous node on cheapest known path
+  gScore = Dict() # cost of currently cheapest known path to node
+  gScore[sourceNode] = 0
+  fScore = Dict() # estimated cost of full path
+  fScore[sourceNode] = h(source, target)
+
+  println("source: ", source)
+  println("target: ", target)
+
+  numNodes = 0
+
+  while !isempty(openSet)
+    numNodes += 1
+    if mod(numNodes, 10000) == 0
+      println(numNodes, " nodes checked")
+    end
+    sort!(openSet, by=v -> get(fScore, v, Inf))
+    current = popfirst!(openSet)
+    #println("node: ", first(current))
+    #println("level: ", last(current))
+    if first(current) == target
+      println("target reached!")
+      return true
+    end
+
+    for neighbour in nb(current)
+      tentative_gScore = get(gScore, current, Inf) + 1
+      if tentative_gScore < get(gScore, neighbour, Inf)
+        cameFrom[neighbour] = current
+        gScore[neighbour] = tentative_gScore
+        fScore[neighbour] = tentative_gScore + h(first(neighbour), target)
+        if neighbour ∉ openSet
+          push!(openSet, neighbour)
+        end
+      end
+    end
+  end
+
+  println("target couldn't be reached!")
+  return false
 end
 
 
@@ -130,12 +252,9 @@ println(sum(
     machines)
 ))
 
-
-"""
-#str = "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}"
-str = "[...#.] (0,2,3,4) (2,3) (0,4) (0,1,2) (1,2,3,4) {7,5,12,7,2}"
-machine = parse(Machine, str)
-#println(machine)
-graph = findPath(toGraph(machine), fill(false, length(machine.lights)) |> BitVector, machine.lights)
-println(graph)
-"""
+# problem two
+println("minJoltage:")
+println(Int(sum(
+  map(m -> minJoltage(m.buttons, m.joltage),
+    machines)
+)))
